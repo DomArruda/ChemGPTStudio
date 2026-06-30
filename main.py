@@ -1,162 +1,33 @@
-# Bio-Chem Molecule Studio — educational demo
-# Requires:            streamlit duckdb rdkit py3Dmol stmol
-# Optional (ChemGPT):  torch transformers selfies
-#   pip install streamlit duckdb rdkit py3Dmol stmol torch transformers selfies
-# Split each "# file.py" block into its own module later.
-
-# models.py
-import hashlib
-import importlib.util
-import duckdb
-import streamlit as st
 
 
-@st.cache_resource
-def init_duckdb():
-    """In-memory DuckDB stage: memoizes analyses and doubles as an audit log."""
-    conn = duckdb.connect(database=":memory:", read_only=False)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS molecule_stage (
-            cache_hash          VARCHAR PRIMARY KEY,
-            smiles              VARCHAR,
-            target_context      VARCHAR,
-            source              VARCHAR,
-            mw                  DOUBLE,
-            logp                DOUBLE,
-            hbd                 INTEGER,
-            hba                 INTEGER,
-            tpsa                DOUBLE,
-            rot_bonds           INTEGER,
-            rings               INTEGER,
-            heavy_atoms         INTEGER,
-            lipinski_violations INTEGER
-        )
-    """)
-    return conn
+import importlib
+from models import (
+    init_duckdb,
+    make_cache_key
+)
 
-
-def make_cache_key(canonical_smiles: str, target_context: str) -> str:
-    return hashlib.sha256(f"{canonical_smiles}|{target_context}".encode()).hexdigest()
-
-
-# metrics.py
-from rdkit import Chem
-from rdkit.Chem import Descriptors, Crippen, rdMolDescriptors, AllChem
-
-
-def compute_descriptors(smiles: str):
-    """Real physicochemical descriptors. Returns None on an unparseable SMILES."""
-    mol = Chem.MolFromSmiles(smiles)
-    if mol is None:
-        return None
-    desc = {
-        "canonical": Chem.MolToSmiles(mol),
-        "mw": round(Descriptors.MolWt(mol), 1),
-        "logp": round(Crippen.MolLogP(mol), 2),
-        "hbd": rdMolDescriptors.CalcNumHBD(mol),
-        "hba": rdMolDescriptors.CalcNumHBA(mol),
-        "tpsa": round(rdMolDescriptors.CalcTPSA(mol), 1),
-        "rot_bonds": rdMolDescriptors.CalcNumRotatableBonds(mol),
-        "rings": rdMolDescriptors.CalcNumRings(mol),
-        "heavy_atoms": mol.GetNumHeavyAtoms(),
-    }
-    desc["lipinski_violations"] = sum(
-        [desc["mw"] > 500, desc["logp"] > 5, desc["hbd"] > 5, desc["hba"] > 10]
-    )
-    return desc
-
-
-def smiles_to_molblock(smiles: str):
-    """Generate 3D coordinates locally with RDKit (no network). None if it fails."""
-    mol = Chem.MolFromSmiles(smiles)
-    if mol is None:
-        return None
-    mol = Chem.AddHs(mol)
-    if AllChem.EmbedMolecule(mol, randomSeed=42) != 0:
-        if AllChem.EmbedMolecule(mol, randomSeed=42, useRandomCoords=True) != 0:
-            return None
-    try:
-        AllChem.MMFFOptimizeMolecule(mol)
-    except Exception:
-        pass
-    return Chem.MolToMolBlock(mol)
-
-
-# generate.py  (ChemGPT — a real small transformer, optional)
-GEN_AVAILABLE = all(
-    importlib.util.find_spec(m) is not None for m in ("torch", "transformers", "selfies")
+from metrics import (
+    smiles_to_molblock,
+    compute_descriptors
 )
 
 
-@st.cache_resource(show_spinner=False)
-def load_chemgpt(model_name: str):
-    """Load tokenizer + causal LM once. First call downloads weights from HF."""
-    from transformers import AutoTokenizer, AutoModelForCausalLM
-    tok = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(model_name)
-    model.eval()
-    return tok, model
+from generate import (
+    _seed_ids,
+    load_chemgpt,
+    generate_smiles,
+    GEN_AVAILABLE
+)
 
-
-def _seed_ids(tok, seed_smiles: str):
-    """Build the prompt token ids as a SELFIES fragment."""
-    import selfies
-    sf = "[C]"
-    if seed_smiles.strip():
-        mol = Chem.MolFromSmiles(seed_smiles)
-        if mol is not None:
-            try:
-                sf = selfies.encoder(Chem.MolToSmiles(mol))
-            except Exception:
-                sf = "[C]"
-    return tok(sf, return_tensors="pt").input_ids
-
-
-def generate_smiles(model_name, n, temperature, max_new_tokens, seed_smiles=""):
-    """Sample candidate molecules, decode SELFIES -> SMILES, keep RDKit-valid ones."""
-    import torch
-    import selfies
-
-    tok, model = load_chemgpt(model_name)
-    input_ids = _seed_ids(tok, seed_smiles)
-    pad_id = tok.pad_token_id
-    if pad_id is None:
-        pad_id = tok.eos_token_id if tok.eos_token_id is not None else 0
-
-    with torch.no_grad():
-        out = model.generate(
-            input_ids,
-            do_sample=True,
-            temperature=float(temperature),
-            top_k=50,
-            max_new_tokens=int(max_new_tokens),
-            num_return_sequences=int(n),
-            pad_token_id=pad_id,
-        )
-
-    seen, results = set(), []
-    for seq in out:
-        text = "".join(tok.decode(seq, skip_special_tokens=True).split())
-        try:
-            smi = selfies.decoder(text)
-        except Exception:
-            continue
-        if not smi:
-            continue
-        mol = Chem.MolFromSmiles(smi)
-        if mol is None:
-            continue
-        canon = Chem.MolToSmiles(mol)
-        if canon and canon not in seen:
-            seen.add(canon)
-            results.append(canon)
-    return results
 
 
 # main.py
 import pandas as pd
 import py3Dmol
 from stmol import showmol
+import streamlit as st
+from rdkit import Chem
+from rdkit.Chem import Descriptors, Crippen, rdMolDescriptors, AllChem
 
 st.set_page_config(
     page_title="ChemGPT Studio",
@@ -345,7 +216,7 @@ with btn_col:
 with st.container(border=True):
     st.markdown("**✨ Generate new candidates with ChemGPT** (optional)")
     st.caption("Seeded from the molecule above (clear the box for unseeded sampling). Generation is *de novo* — not conditioned on the target.")
-    if not GEN_AVAILABLE:
+    if not GEN_AVAILABLE():
         st.warning("Generation needs extra packages:  `pip install torch transformers selfies`")
 
     g1, g2, g3, g4 = st.columns([2, 1, 1, 1])
@@ -356,7 +227,7 @@ with st.container(border=True):
     max_tok = g4.slider("Max tokens", 16, 128, 64, 8)
 
     if st.button("Generate Molecules", type="secondary",
-                 disabled=not GEN_AVAILABLE, width="stretch"):
+                 disabled=not GEN_AVAILABLE(), width="stretch"):
         with st.spinner("Loading ChemGPT and sampling molecules (first run downloads the model)…"):
             try:
                 st.session_state["gen_candidates"] = generate_smiles(
