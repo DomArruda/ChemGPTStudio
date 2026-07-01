@@ -15,5 +15,6 @@ torch>=2.2
 transformers>=4.40
 selfies>=2.1.1
 torchvision==0.27.1 # FIXED
+pubchempy==1.0.5
 
 # (transformers pulls in tokenizers, safetensors, and huggingface-hub itself.)
