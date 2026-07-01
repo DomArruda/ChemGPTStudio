@@ -49,9 +49,10 @@ The first time you generate, the small model downloads from Hugging Face and is 
 
 ## Privacy & data
 
-- Descriptor computation and 3D embedding run **locally** — molecules never leave your machine.
+- Descriptor computation and 3D embedding run **locally** — molecular computation never leave your machine.
 - ChemGPT weights are downloaded once from Hugging Face, then inference is local.
 - The cache/log lives in an in-memory DuckDB database and is wiped when the app stops.
+- **Note: PubChem receives requests to get the nomenclature of generated and pasted molecules. 
 
 ## Project structure
 
