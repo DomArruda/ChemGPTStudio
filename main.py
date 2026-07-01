@@ -1,6 +1,12 @@
+# Bio-Chem Molecule Studio — educational demo
+# Requires:            streamlit duckdb rdkit py3Dmol stmol
+# Optional (ChemGPT):  torch transformers selfies
+#   pip install streamlit duckdb rdkit py3Dmol stmol torch transformers selfies
+# Split each "# file.py" block into its own module later.
 
 
 import importlib
+import numpy as np
 from models import (
     init_duckdb,
     make_cache_key
@@ -16,7 +22,8 @@ from generate import (
     _seed_ids,
     load_chemgpt,
     generate_smiles,
-    GEN_AVAILABLE
+    GEN_AVAILABLE, 
+    smiles_to_nomenclature
 )
 
 
@@ -245,11 +252,20 @@ with st.container(border=True):
             st.markdown(f"**{len(cands)} valid candidate(s) generated:**")
             st.caption("Chemically valid samples only — not screened for novelty, synthesizability, or stability.")
             rows = []
+        
             for smi in cands:
+                nomenclature_attempt = "Could not generate nomenclature..."
                 d = compute_descriptors(smi)
                 if d:
+                    try:
+                        print("attempting nomenclature...")
+                        nomenclature_attempt = smiles_to_nomenclature(smi)
+                        print(nomenclature_attempt)
+                    except Exception as e:
+                        print("Attempted to get nomenclature of generated molecule but failed....")
+
                     rows.append({"SMILES": smi, "MW": d["mw"], "LogP": d["logp"],
-                                 "Lipinski viol.": d["lipinski_violations"]})
+                                 "Lipinski viol.": d["lipinski_violations"], "Nomenclature": nomenclature_attempt})
             st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
             pick_col, pick_btn = st.columns([4, 1])
@@ -278,8 +294,15 @@ log_df = db_conn.execute(
     SELECT smiles, source, target_context, mw, logp, hbd, hba, tpsa, lipinski_violations
     FROM molecule_stage
     """
-).df().rename(columns={
-    "smiles": "SMILES", "source": "Source", "target_context": "Target",
+).df()
+
+nomenclature_names = [smiles_to_nomenclature(smile_val) for smile_val in log_df['smiles'].to_list()]
+log_df['nomenlature'] = nomenclature_names
+log_df['target_context'] = np.where(log_df['source'] == "generated", "GENERATED: " + log_df['target_context'], log_df['target_context'])
+
+
+log_df.rename(columns={
+    "smiles": "SMILES", "nomenclature":"Nomenclature", "source": "Source", "target_context": "Context",
     "mw": "MW", "logp": "LogP", "hbd": "H-Donors", "hba": "H-Acceptors",
     "tpsa": "TPSA", "lipinski_violations": "Lipinski Violations",
 })
