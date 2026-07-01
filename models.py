@@ -7,11 +7,7 @@ import streamlit as st
 
 @st.cache_resource
 def init_duckdb():
-    """Shared in-memory DuckDB stage. NOTE: @st.cache_resource makes this
-    connection process-global and shared across every session, so the table is
-    global too. Rows are therefore scoped per session via the session_id column
-    and every read is filtered by it (see main.py). For production you'd move to
-    a real per-user backing store rather than relying on a shared in-memory DB."""
+    """Shared in-memory DuckDB stage.
     conn = duckdb.connect(database=":memory:", read_only=False)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS molecule_stage (
